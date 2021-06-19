@@ -5,6 +5,7 @@ import patoolib
 import zipfile
 
 
+# Download data from a specified URL
 def download_data(url, directory_name):
     response = requests.get(url, stream=True)  # HTTP GET Request for url
     total_size_in_bytes = int(response.headers.get('content-length', 0))
@@ -22,16 +23,22 @@ def download_data(url, directory_name):
         print("ERROR, something went wrong")
 
 
+# Unpack zipped files
 def unzip_file(folder):
+    # Check whether file exists
     if os.path.exists(folder):
+        # Check file type and unzip with appropriate methods
         if folder.endswith('.rar'):
             patoolib.extract_archive(folder)
         elif folder.endswith('.zip'):
             with zipfile.ZipFile(folder, 'r') as zip_ref:
-                zip_ref.extractall('ISIC18Dataset')
+                # display progress bar
+                for content in tqdm(zip_ref.infolist(), desc="Extracting ISIC data "):
+                    zip_ref.extract(content, 'ISIC18Dataset')
         os.remove(folder)
 
 
+# Download ISIC data from link and unzip. Unzip PH2 data if exists.
 def download_and_unzip():
     zip_location_lesion_imgs = 'isic-image_data.zip'
     zip_location_mask_imgs = 'isic-mask_data.zip'
@@ -39,6 +46,7 @@ def download_and_unzip():
     isic_lesion_images_url = 'https://isic-challenge-data.s3.amazonaws.com/2018/ISIC2018_Task1-2_Training_Input.zip'
     isic_gt_masks_url = 'https://isic-challenge-data.s3.amazonaws.com/2018/ISIC2018_Task1_Training_GroundTruth.zip'
 
+    # Check whether ISIC data has been downloaded, only download if it hasn't previoualy been downloaded
     if not os.path.exists(zip_location_lesion_imgs) and not os.path.exists('ISICNumpy') and not os.path.exists('ISIC18Dataset'):
         download_data(isic_lesion_images_url, zip_location_lesion_imgs)
         download_data(isic_gt_masks_url, zip_location_mask_imgs)

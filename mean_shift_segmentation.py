@@ -7,13 +7,14 @@ from skimage import measure
 import matplotlib.pyplot as plt
 import os
 from scipy.spatial import distance
+from preprocessing import apply_spec_reflection_filter, remove_hair, display_preprocessed_results
 
 
 def mean_shift_colour_clustering(image):
     flat_img = np.reshape(image, [-1, 3])
 
     # get dimension of the neighbourhood
-    bandwidth = estimate_bandwidth(flat_img, quantile=0.05)
+    bandwidth = estimate_bandwidth(flat_img, quantile=0.04)
 
     # perform clustering on 1D image and return cluster labels
     ms_clustering = MeanShift(bandwidth=bandwidth, bin_seeding=True).fit(flat_img)
@@ -21,7 +22,7 @@ def mean_shift_colour_clustering(image):
     # get coordinates of cluster centers
     cluster_centers = ms_clustering.cluster_centers_
 
-    # cluster colours in image
+    # get clustered image
     clustered_img = cluster_centers[np.reshape(ms_clustering.labels_, image.shape[:2])]
 
     return clustered_img
@@ -36,7 +37,7 @@ def suppress_skin(image, clustered_image):
     white_image = np.array(Image.new('RGB', image_shape, color=(255, 255, 255)).rotate(45))
 
     # adaptive thresholding
-    bw_img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    bw_img = cv2.cvtColor(np.uint8(img), cv2.COLOR_RGB2GRAY)
     img_blur = cv2.blur(bw_img, (9, 9))
     adapt_thresh = cv2.adaptiveThreshold(img_blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 1)
 
@@ -55,7 +56,7 @@ def suppress_skin(image, clustered_image):
     # remove colours which have been classified as healthy skin colours
     suppressed_skin_img = clustered_image.copy()
     for i in range(len(colour_counts)):
-        if colour_counts[i] > 20:
+        if colour_counts[i] > 30:
             suppressed_skin_img[np.all(suppressed_skin_img == colours[i], axis=-1)] = (255, 255, 255)
 
     binary_img = suppressed_skin_img.copy()
@@ -75,7 +76,7 @@ def suppress_skin(image, clustered_image):
     lesions = []
     if len(regions) > 1:
         for region in regions:
-            if region.area > 10:
+            if region.area > 200:
                 distance_to_center = (distance.euclidean(image_center, region.centroid))
                 lesions.append({'region': region, 'distance_to_center': distance_to_center})
             else:
@@ -104,43 +105,86 @@ def extract_boundary(image):
     return boundary_img, contours
 
 
-def mean_shift_segmentation(image):
-    print("Segmenting " + image)
-    img = cv2.imread(image)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (128, 128))
+def mean_shift_segmentation(image, ground_truth, index, dataset, preprocessing):
+    if preprocessing:
+        # remove hair
+        removed_hair = remove_hair(image)
 
-    clustered_img = mean_shift_colour_clustering(img)
-    segmented_img = suppress_skin(img, clustered_img)
+        # apply specular reflection reduction filter
+        pre_processed_img = apply_spec_reflection_filter(removed_hair)
+        rgb_image = np.uint8(pre_processed_img * 255)
+        display_preprocessed_results(dataset, image, pre_processed_img, index)
+    else:
+        rgb_image = np.uint8(image)
 
+    clustered_img = mean_shift_colour_clustering(rgb_image)
+    segmented_img = suppress_skin(rgb_image, clustered_img)
+    # get boundary border
     boundary_img, contours = extract_boundary(segmented_img)
 
+    # draw boundary on lesion image
+    img = np.uint8(image)
+    cv2.drawContours(img, contours, 0, (56, 255, 76), 1)
+
+    # get boundary of ground truth and draw on lesion image
+    contours_gt = cv2.findContours(np.uint8(ground_truth), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[0]
+    if len(contours_gt) != 0:
+        contour_gt = max(contours_gt, key=cv2.contourArea)
+    cv2.drawContours(img, [contour_gt], 0, (0, 85, 255), 1)
+
+    # get filled segmentation
     filled_boundary = np.zeros((128, 128))
     cv2.fillPoly(filled_boundary, pts=contours, color=(255, 255, 255))
 
-    image_id = image[len(image) - 16: len(image) - 4]
-    result_directory = "Meanshift steps"
+    # create directory to store results if it doesn't already exist
+    if preprocessing:
+        result_directory = "Mean-shift steps " + dataset + " preprocessed"
+    else:
+        result_directory = "Mean-shift steps " + dataset
     if not os.path.exists(result_directory):
         os.makedirs(result_directory)
 
-    plt.figure(figsize=(16, 16))
-    plt.subplot(1, 4, 1)
-    plt.imshow(img)
-    plt.title('Original Image')
-    plt.axis('off')
-    plt.subplot(1, 4, 2)
-    plt.imshow(np.uint8(clustered_img))
-    plt.title('Clustered Image')
-    plt.axis('off')
-    plt.subplot(1, 4, 3)
-    plt.imshow(np.uint8(segmented_img))
-    plt.title('Skin suppression')
-    plt.axis('off')
-    plt.subplot(1, 4, 4)
-    plt.imshow(boundary_img, cmap='gray')
-    plt.title('Boundary extraction')
-    plt.axis('off')
-    plt.savefig(result_directory + '/' + image_id, dpi=300, bbox_inches='tight')
-    plt.close()
+    # Automatically close plot display after 3 seconds, if user closes the plot manually, prevents exception and allow
+    # user to close
+    try:
+        plt.figure(figsize=(13, 5))
+        plt.subplot(2, 4, 1)
+        plt.imshow(rgb_image)
+        plt.title('Original Image')
+        plt.axis('off')
+        plt.subplot(2, 4, 2)
+        plt.imshow(np.uint8(clustered_img))
+        plt.title('Clustered Image')
+        plt.axis('off')
+        plt.subplot(2, 4, 3)
+        plt.imshow(np.uint8(segmented_img))
+        plt.title('Skin suppression')
+        plt.axis('off')
+        plt.subplot(2, 4, 4)
+        plt.imshow(boundary_img, cmap='gray')
+        plt.title('Boundary extraction')
+        plt.axis('off')
+        plt.subplot(2, 4, 5)
+        plt.imshow(rgb_image)
+        plt.title('Original Image')
+        plt.axis('off')
+        plt.subplot(2, 4, 6)
+        plt.imshow(np.uint8(ground_truth), cmap="gray")
+        plt.title('Ground Truth')
+        plt.axis('off')
+        plt.subplot(2, 4, 7)
+        plt.imshow(np.uint8(filled_boundary), cmap="gray")
+        plt.title('Automatic border')
+        plt.axis('off')
+        plt.subplot(2, 4, 8)
+        plt.imshow(np.uint8(img))
+        plt.title('GT and automatic border')
+        plt.axis('off')
+        plt.savefig(result_directory + '/' + str(index), dpi=300, bbox_inches='tight')
+        plt.show(block=False)
+        plt.pause(5)
+        plt.close()
+    except:
+        plt.close()
 
     return filled_boundary

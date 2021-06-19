@@ -1,68 +1,110 @@
-import glob
 from rac_segmentation import region_based_active_contour_seg
 import sys
 from mean_shift_segmentation import mean_shift_segmentation
-from download_data import download_and_unzip
 import numpy as np
-import matplotlib.pyplot as plt
+from evaluate import calculate_modified_hausdorff_distance, calc_metrics
+from numpy_file_utility import download_save_dataset, load_images
+import os
+
+Is_valid = False
+Segmentation_type = ""
+Dataset_size = 0
+Dataset = ""
+Preprocessing = False
 
 
-def load_images(directory):
-    lesion_images = np.load(directory + '/lesion_images.npy')
-    ground_truths = np.load(directory + '/ground_truths.npy')
-
-    return lesion_images, ground_truths
-
-
-def display_meanshift_results(img, clustered_img, segmented_img, boundary_img):
-    f = plt.figure()
-    f.add_subplot(1, 4, 1)
-    plt.imshow(img)
-    f.add_subplot(1, 4, 2)
-    plt.imshow(np.uint8(clustered_img))
-    f.add_subplot(1, 4, 3)
-    plt.imshow(np.uint8(segmented_img))
-    f.add_subplot(1, 4, 4)
-    plt.imshow(boundary_img, cmap='gray')
-    # plt.savefig('1.png', dpi=300, bbox_inches='tight')
-    plt.show()
-
-
+# Read argument parameters
 def read_parameters():
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "RAC":
-            print(sys.argv[1])
-            download_and_unzip()
-            testing_data_size = round(2594 * 0.2)
-            #isic_lesion_files = glob.glob("ISIC18Dataset/ISIC2018_Task1-2_Training_input/*.jpg")[:testing_data_size]
-            isic_lesion_files = glob.glob("ISIC_0000031.jpg")
-            for image in isic_lesion_files:
-                region_based_active_contour_seg(image)
-        elif sys.argv[1] == "Mean-shift":
-            print(sys.argv[1])
-            download_and_unzip()
+    global Segmentation_type
+    global Dataset_size
+    global Dataset
+    global Preprocessing
+    global Is_valid
 
-            testing_data_size = round(2594 * 0.2)
-            isic_lesion_files = glob.glob("ISIC18Dataset/ISIC2018_Task1-2_Training_input/*.jpg")[:testing_data_size]
-            isic_ground_truths_files = glob.glob("ISIC18Dataset/ISIC2018_Task1_Training_GroundTruth/*.png")[
-                                       :testing_data_size]
-
-            segmented_results = []
-            for i, image in enumerate(isic_lesion_files):
-                segmented_result = mean_shift_segmentation(image)
-                segmented_results.append(segmented_result)
-                # img = cv2.imread(isic_ground_truths_files[i])
-
-            np.save('meanshift_isic_segmented_results', segmented_results)
-            # results = np.load('segmented_results.npy')
-            """for i in range(len(results)):
-                plt.imshow(results[i], cmap="gray")
-                plt.show()"""
+    # Check whether 4 extra arguments are entered
+    if len(sys.argv) == 5:
+        # Argument for choosing segmentation method
+        if sys.argv[1] != "RAC" and sys.argv[1] != "Mean-shift":
+            print("Invalid first parameter. Please select RAC or Mean-shift.")
+            Is_valid = False
+            return
         else:
-            print("No valid option selected. Please select RAC or Mean-shift")
+            Segmentation_type = sys.argv[1]
+
+        # Argument for choosing dataset type
+        if sys.argv[2] != "ISIC" and sys.argv[2] != "PH2":
+            print("Invalid second parameter. Please select a dataset (ISIC or PH2)")
+            return
+        elif sys.argv[2] == "PH2" and not os.path.exists("PH2Dataset/PH2 Dataset images") and not os.path.exists(
+                    "PH2Numpy") and not os.path.exists("PH2Dataset.rar"):
+            print("Cannot find PH2 data. Please download from the link below and upload 'PH2Dataset.rar' file:")
+            print("https://www.dropbox.com/s/k88qukc20ljnbuo/PH2Dataset.rar")
+            return
+        else:
+            Dataset = sys.argv[2]
+
+        # Argument for choosing size of data to run on
+        if sys.argv[3].isdigit():
+            Dataset_size = int(sys.argv[3])
+        else:
+            print("Invalid third parameter. Please enter dataset size.")
+            return
+
+        # Argument for whether to perform pre-processing
+        if sys.argv[4] == "True":
+            Preprocessing = True
+            Is_valid = True
+        elif sys.argv[4] == "False":
+            Preprocessing = False
+            Is_valid = True
+        else:
+            print("Invalid option entered for pre-processing. Please select True to pre-process image, and False to "
+                  "not perform pre-processing")
+            return
     else:
-        print("No valid option selected. Please select RAC or Mean-shift")
+        print("Invalid selections. Please select segmentation type (RAC or Mean-shift), dataset type (ISIC or PH2), "
+              "dataset size (int), and whether to perform pre-processing (True or False)")
+        Is_valid = False
+
+
+def perform_segmentation():
+    global Dataset_size
+
+    # Download and unzip ISIC data if not already downloaded, and unzip PH2 data if exists
+    # Data is then resized and saved as NumPy files, this will improve the speed of getting image data
+    # if user wants to re-run the program.
+    download_save_dataset()
+
+    # load images from numpy file
+    lesion_images, ground_truths = load_images(Dataset + "Numpy")
+
+    # If selected data size is greater than actual length of dataset, use 20% of the data
+    if Dataset_size == 0 or Dataset_size > len(lesion_images):
+        Dataset_size = round(len(lesion_images) * 0.2)
+
+    lesion_images = lesion_images[:Dataset_size]
+    ground_truths = ground_truths[:Dataset_size]
+
+    # numpy array to store segmented results
+    segmented_results = np.zeros([Dataset_size, 128, 128])
+
+    # Iterate over images and perform segmentation
+    if Segmentation_type == "RAC":
+        for i, image in enumerate(lesion_images):
+            segmented_result = region_based_active_contour_seg(image, ground_truths[i], i, Dataset, Preprocessing)
+            segmented_results[i, :, :] = segmented_result
+    else:
+        for i, image in enumerate(lesion_images):
+            segmented_result = mean_shift_segmentation(image, ground_truths[i], i, Dataset, Preprocessing)
+            segmented_results[i, :, :] = segmented_result
+
+    return segmented_results, ground_truths
 
 
 if __name__ == '__main__':
     read_parameters()
+    if Is_valid:
+        automatic_borders, ground_truths = perform_segmentation()
+        # Evaluate results
+        calc_metrics(ground_truths, automatic_borders)
+        calculate_modified_hausdorff_distance(ground_truths, automatic_borders)
